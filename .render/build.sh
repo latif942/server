@@ -1,14 +1,12 @@
 #!/bin/bash
 set -e
 
-# Install Python dependencies
+# Install dependencies
 pip install -r requirements.txt
 
-# Install yt-dlp binary
-echo "Installing yt-dlp..."
+# Force install yt-dlp binary to a known location
 curl -L https://github.com/yt-dlp/yt-dlp/releases/latest/download/yt-dlp -o /opt/render/.local/bin/yt-dlp
 chmod +x /opt/render/.local/bin/yt-dlp
 
-# Ensure it's in PATH
+# Add to PATH so your script can find it
 export PATH="/opt/render/.local/bin:$PATH"
-echo "yt-dlp installed successfully."
