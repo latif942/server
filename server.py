@@ -1,22 +1,59 @@
 from flask import Flask, request, Response, jsonify
-from pytubefix import Search, YouTube
 import os
 import requests
+import urllib.parse
 
 app = Flask(__name__)
 
-def get_audio_url(query):
-    s = Search(query)
-    for result in s.results[:5]:
+PIPED_INSTANCES = [
+    'https://pipedapi.kavin.rocks',
+    'https://pipedapi.adminforge.de',
+    'https://pipedapi.darkness.services',
+    'https://piped-api.garudalinux.org',
+    'https://pipedapi.in.projectsegfau.lt',
+]
+
+def search_piped(query):
+    for base in PIPED_INSTANCES:
         try:
-            yt = YouTube(result.watch_url)
-            stream = yt.streams.filter(only_audio=True).order_by('abr').last()
-            if stream:
-                return stream.url
+            res = requests.get(
+                f'{base}/search',
+                params={'q': query, 'filter': 'music_songs'},
+                timeout=6
+            )
+            if res.status_code != 200:
+                continue
+            items = res.json().get('items', [])
+            for item in items:
+                url = item.get('url', '')
+                if 'watch?v=' in url:
+                    vid = url.split('watch?v=')[-1].split('&')[0]
+                    print(f"Found video {vid} via {base}")
+                    return vid, base
         except Exception as e:
-            print(f"Skipping {result.watch_url}: {e}")
-            continue
-    raise Exception("No playable stream found")
+            print(f"Search failed on {base}: {e}")
+    return None, None
+
+def get_stream_url(video_id, base):
+    for instance in [base] + PIPED_INSTANCES:
+        try:
+            res = requests.get(f'{instance}/streams/{video_id}', timeout=6)
+            if res.status_code != 200:
+                continue
+            data = res.json()
+            streams = [s for s in data.get('audioStreams', []) 
+                      if s.get('url') and 'mime_type' in s or 'mimeType' in s]
+            if not streams:
+                streams = data.get('audioStreams', [])
+            if streams:
+                streams.sort(key=lambda x: x.get('bitrate', 0), reverse=True)
+                url = streams[0].get('url')
+                if url:
+                    print(f"Got stream from {instance}")
+                    return url
+        except Exception as e:
+            print(f"Stream failed on {instance}: {e}")
+    return None
 
 @app.route('/stream')
 def stream():
@@ -24,16 +61,25 @@ def stream():
     if not q:
         return jsonify({'error': 'no query'}), 400
     try:
-        url = get_audio_url(q)
+        video_id, base = search_piped(q)
+        if not video_id:
+            return jsonify({'error': 'no video found'}), 404
+        
+        url = get_stream_url(video_id, base)
+        if not url:
+            return jsonify({'error': 'no stream found'}), 404
+
         def generate():
-            with requests.get(url, stream=True, timeout=30) as r:
+            with requests.get(url, stream=True, timeout=60,
+                headers={'User-Agent': 'Mozilla/5.0'}) as r:
                 for chunk in r.iter_content(chunk_size=8192):
                     if chunk:
                         yield chunk
+
         return Response(generate(), mimetype='audio/mp4')
     except Exception as e:
         import traceback
-        print(traceback.format_exc())  # ← add this
+        print(traceback.format_exc())
         return jsonify({'error': str(e)}), 500
 
 @app.route('/health')
