@@ -32,7 +32,8 @@ def stream():
                         yield chunk
         return Response(generate(), mimetype='audio/mp4')
     except Exception as e:
-        print(f"Error: {e}")
+        import traceback
+        print(traceback.format_exc())  # ← add this
         return jsonify({'error': str(e)}), 500
 
 @app.route('/health')
