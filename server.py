@@ -10,34 +10,39 @@ def get_audio_url(query):
         '-f', 'bestaudio[ext=m4a]/bestaudio[ext=mp3]/bestaudio',
         '--dump-json',
         '--no-playlist',
-        '--socket-timeout', '10',
+        '--socket-timeout', '15',
+        '--extractor-retries', '3',
         f'ytsearch1:{query}'
     ]
+    cookie_file = None
     if COOKIES:
-        with tempfile.NamedTemporaryFile(mode='w', delete=False, suffix='.txt') as f:
-            f.write(COOKIES)
-            cookie_file = f.name
-        cmd.extend(['--cookies', cookie_file])
-    else:
-        cookie_file = None
+        try:
+            with tempfile.NamedTemporaryFile(mode='w', delete=False, suffix='.txt') as f:
+                f.write(COOKIES)
+                cookie_file = f.name
+            cmd.extend(['--cookies', cookie_file])
+        except Exception as e:
+            print(f"Cookie write error: {e}")
     try:
-        result = subprocess.run(cmd, capture_output=True, text=True, timeout=30)
+        result = subprocess.run(cmd, capture_output=True, text=True, timeout=45)
         if result.returncode != 0:
-            print(f"yt-dlp error: {result.stderr}")
+            print(f"yt-dlp stderr: {result.stderr[:200]}")
             return None
         data = json.loads(result.stdout.strip())
-        # Handle both single video and search results
         if 'entries' in data and data['entries']:
             url = data['entries'][0].get('url')
         else:
             url = data.get('url')
         return url
     except Exception as e:
-        print(f"subprocess error: {e}")
+        print(f"Extraction error: {e}")
         return None
     finally:
         if cookie_file and os.path.exists(cookie_file):
-            os.unlink(cookie_file)
+            try:
+                os.unlink(cookie_file)
+            except:
+                pass
 
 @app.route('/stream')
 def stream():
@@ -48,21 +53,20 @@ def stream():
         url = get_audio_url(q)
         if not url:
             return jsonify({'error': 'extraction failed'}), 404
-        
-        # FIX: Capture headers BEFORE the generator
-        range_header = request.headers.get('Range', 'bytes=0-')
-        
+        # Capture headers BEFORE generator to avoid context error
+        range_hdr = request.headers.get('Range', 'bytes=0-')
         def gen():
             headers = {
                 'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36',
-                'Range': range_header  # Use the captured value
+                'Range': range_hdr
             }
-            with requests.get(url, stream=True, timeout=60, headers=headers) as r:
-                for chunk in r.iter_content(8192):
+            with requests.get(url, stream=True, timeout=90, headers=headers) as r:
+                for chunk in r.iter_content(chunk_size=8192):
                     if chunk:
                         yield chunk
         resp = Response(gen(), mimetype='audio/mp4')
         resp.headers['Accept-Ranges'] = 'bytes'
+        resp.headers['Access-Control-Allow-Origin'] = '*'
         return resp
     except Exception as e:
         import traceback

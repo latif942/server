@@ -1,0 +1,9 @@
+services:
+  - type: web
+    name: server
+    env: python
+    buildCommand: pip install -r requirements.txt && curl -L https://github.com/yt-dlp/yt-dlp/releases/latest/download/yt-dlp -o /opt/render/.local/bin/yt-dlp && chmod +x /opt/render/.local/bin/yt-dlp
+    startCommand: python server.py
+    envVars:
+      - key: YOUTUBE_COOKIES
+        sync: false
