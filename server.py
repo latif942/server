@@ -1,112 +1,96 @@
 from flask import Flask, request, Response, jsonify
 import os
-import requests
+import subprocess
+import json
+import tempfile
+import yt_dlp
 
-# Initialize Flask correctly
 app = Flask(__name__)
 
-PIPED_INSTANCES = [
-    'https://pipedapi.kavin.rocks',
-    'https://pipedapi-libre.kavin.rocks',
-    'https://pipedapi.adminforge.de',
-    'https://api.piped.yt',
-    'https://pipedapi.darkness.services',
-    'https://pipedapi.leptons.xyz',
-    'https://piped-api.privacy.com.de',
-    'https://pipedapi.owo.si',
-    'https://pipedapi.ducks.party',
-    'https://api.piped.private.coffee',
-    'https://pipedapi.reallyaweso.me',
-]
+# Get cookies from environment variable (set in Render Dashboard)
+# If not set, yt-dlp will run without cookies (less reliable)
+COOKIES_ENV = os.environ.get('YOUTUBE_COOKIES', '')
 
-def search_video(query):
-    """Searches for a video ID using Piped instances."""
-    for base in PIPED_INSTANCES:
-        try:
-            # Use a shorter timeout for search to fail fast
-            r = requests.get(f'{base}/search', params={'q': query, 'filter': 'videos'}, timeout=5)
-            if r.status_code != 200: 
-                continue
-            
-            data = r.json()
-            items = data.get('items', [])
-            
-            for item in items:
-                url = item.get('url', '')
-                if 'watch?v=' in url:
-                    vid = url.split('watch?v=')[-1].split('&')[0]
-                    print(f"[SEARCH] Found {vid} via {base}")
-                    return vid, base
-        except Exception as e:
-            # Silently fail to next instance
-            continue
-    return None, None
+def get_video_info(query):
+    """Searches YouTube and returns the best audio URL using yt-dlp."""
+    
+    ydl_opts = {
+        'format': 'bestaudio/best',
+        'quiet': True,
+        'no_warnings': True,
+        'extract_flat': False, # We need the actual URL
+        'socket_timeout': 10,
+    }
 
-def get_stream_url(video_id):
-    """Gets the direct audio stream URL using Piped instances."""
-    for base in PIPED_INSTANCES:
+    # If cookies are provided, write them to a temp file
+    if COOKIES_ENV:
         try:
-            r = requests.get(f'{base}/streams/{video_id}', timeout=5)
-            if r.status_code != 200: 
-                continue
-            
-            data = r.json()
-            streams = data.get('audioStreams', [])
-            
-            # Filter valid streams
-            valid_streams = [s for s in streams if s.get('url')]
-            if not valid_streams: 
-                continue
-            
-            # Sort by bitrate (highest first)
-            valid_streams.sort(key=lambda x: x.get('bitrate', 0), reverse=True)
-            best_stream = valid_streams[0]
-            url = best_stream['url']
-            
-            print(f"[STREAM] Got stream URL from {base}")
-            return url
+            with tempfile.NamedTemporaryFile(mode='w', delete=False, suffix='.txt') as f:
+                f.write(COOKIES_ENV)
+                cookie_file = f.name
+            ydl_opts['cookiefile'] = cookie_file
         except Exception as e:
-            continue
-    return None
+            print(f"Cookie error: {e}")
+
+    try:
+        with yt_dlp.YoutubeDL(ydl_opts) as ydl:
+            # Search for the video
+            info = ydl.extract_info(f"ytsearch1:{query}", download=False)
+            if not info or 'entries' not in info or not info['entries']:
+                return None
+            
+            entry = info['entries'][0]
+            url = entry.get('url') or entry.get('webpage_url')
+            
+            # If we got a direct URL, return it
+            if url:
+                return url
+            
+            # If not, we might need to re-extract with the specific ID
+            vid_id = entry.get('id')
+            if vid_id:
+                info_direct = ydl.extract_info(f"https://www.youtube.com/watch?v={vid_id}", download=False)
+                return info_direct.get('url')
+                
+    except Exception as e:
+        print(f"yt-dlp error: {e}")
+        return None
+    finally:
+        # Clean up temp cookie file if created
+        if COOKIES_ENV and 'cookie_file' in locals():
+            try:
+                os.unlink(cookie_file)
+            except:
+                pass
 
 @app.route('/stream')
 def stream():
     q = request.args.get('q', '')
     if not q:
-        return jsonify({'error': 'No query parameter provided'}), 400
+        return jsonify({'error': 'No query provided'}), 400
 
     try:
-        # 1. Search for Video ID
-        vid, search_base = search_video(q)
-        if not vid:
-            return jsonify({'error': 'Video not found'}), 404
+        url = get_video_info(q)
+        if not url:
+            return jsonify({'error': 'Video not found or extraction failed'}), 404
         
-        # 2. Get Stream URL
-        stream_url = get_stream_url(vid)
-        if not stream_url:
-            return jsonify({'error': 'Could not retrieve stream URL'}), 404
-        
-        # 3. Proxy the stream to Flutter
+        print(f"Streaming: {url[:50]}...")
+
+        # Proxy the stream to avoid CORS/IP issues
         def generate():
             headers = {
                 'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36',
-                'Accept': 'audio/mp4, audio/webm, audio/ogg, audio/*;q=0.9, */*;q=0.8',
                 'Range': request.headers.get('Range', 'bytes=0-')
             }
-            
-            try:
-                with requests.get(stream_url, stream=True, timeout=60, headers=headers) as r:
-                    # Yield chunks
-                    for chunk in r.iter_content(chunk_size=8192):
-                        if chunk:
-                            yield chunk
-            except Exception as e:
-                print(f"[PROXY ERROR] {e}")
-                return
+            import requests
+            with requests.get(url, stream=True, timeout=60, headers=headers) as r:
+                for chunk in r.iter_content(chunk_size=8192):
+                    if chunk:
+                        yield chunk
 
-        response = Response(generate(), mimetype='audio/mp4')
-        response.headers['Accept-Ranges'] = 'bytes'
-        return response
+        resp = Response(generate(), mimetype='audio/mp4')
+        resp.headers['Accept-Ranges'] = 'bytes'
+        return resp
 
     except Exception as e:
         import traceback
@@ -115,7 +99,7 @@ def stream():
 
 @app.route('/health')
 def health():
-    return 'OK'
+    return 'ok'
 
 if __name__ == '__main__':
     port = int(os.environ.get('PORT', 8080))
