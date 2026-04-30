@@ -5,24 +5,35 @@ import requests
 
 app = Flask(__name__)
 
+CLIENTS = ['tv_embedded', 'ios', 'android', 'web']
+
 def get_audio_url(query):
-    opts = {
-        'format': 'bestaudio/best',
-        'quiet': True,
-        'noplaylist': True,
-        'nocheckcertificate': True,
-        'extractor_args': {
-            'youtube': {
-                'player_client': ['ios'],
+    for client in CLIENTS:
+        try:
+            opts = {
+                'format': 'bestaudio/best',
+                'quiet': True,
+                'noplaylist': True,
+                'nocheckcertificate': True,
+                'extractor_args': {
+                    'youtube': {
+                        'player_client': [client],
+                    }
+                }
             }
-        }
-    }
-    with yt_dlp.YoutubeDL(opts) as ydl:
-        info = ydl.extract_info(f"ytsearch1:{query}", download=False)
-        entries = info.get('entries') or [info]
-        if not entries:
-            raise Exception("No results found")
-        return entries[0]['url']
+            with yt_dlp.YoutubeDL(opts) as ydl:
+                info = ydl.extract_info(f"ytsearch1:{query}", download=False)
+                entries = info.get('entries') or [info]
+                if not entries:
+                    continue
+                url = entries[0].get('url')
+                if url:
+                    print(f"Success with client: {client}")
+                    return url
+        except Exception as e:
+            print(f"Client {client} failed: {e}")
+            continue
+    raise Exception("All clients failed")
 
 @app.route('/stream')
 def stream():
@@ -32,7 +43,7 @@ def stream():
     try:
         url = get_audio_url(q)
         def generate():
-            headers = {'User-Agent': 'com.google.ios.youtube/19.09.3 CFNetwork/1220.1 Darwin/20.3.0'}
+            headers = {'User-Agent': 'Mozilla/5.0'}
             with requests.get(url, headers=headers, stream=True) as r:
                 for chunk in r.iter_content(chunk_size=8192):
                     if chunk:
