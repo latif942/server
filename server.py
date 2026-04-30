@@ -1,11 +1,12 @@
 from flask import Flask, request, redirect, jsonify
 import yt_dlp
+import os
 
 app = Flask(__name__)
 
 def get_audio_url(query):
     opts = {
-        'format': 'bestaudio/bestvideo/best',
+        'format': 'bestaudio/best',
         'quiet': True,
         'noplaylist': True,
         'cookiefile': 'cookies.txt',
@@ -32,4 +33,5 @@ def health():
     return 'ok'
 
 if __name__ == '__main__':
-    app.run(host='0.0.0.0', port=8080)
+    port = int(os.environ.get('PORT', 8080))
+    app.run(host='0.0.0.0', port=port)
