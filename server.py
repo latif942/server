@@ -1,39 +1,46 @@
 from flask import Flask, request, Response, jsonify
-import yt_dlp
 import os
 import requests
 
 app = Flask(__name__)
 
-CLIENTS = ['tv_embedded', 'ios', 'android', 'web']
+INVIDIOUS = [
+    'https://invidious.jing.rocks',
+    'https://yt.cdaut.de',
+    'https://invidious.nerdvpn.de',
+]
 
-def get_audio_url(query):
-    for client in CLIENTS:
+def search_and_get_url(query):
+    for base in INVIDIOUS:
         try:
-            opts = {
-                'format': 'bestaudio/best',
-                'quiet': True,
-                'noplaylist': True,
-                'nocheckcertificate': True,
-                'extractor_args': {
-                    'youtube': {
-                        'player_client': [client],
-                    }
-                }
-            }
-            with yt_dlp.YoutubeDL(opts) as ydl:
-                info = ydl.extract_info(f"ytsearch1:{query}", download=False)
-                entries = info.get('entries') or [info]
-                if not entries:
-                    continue
-                url = entries[0].get('url')
-                if url:
-                    print(f"Success with client: {client}")
-                    return url
+            # search
+            res = requests.get(f'{base}/api/v1/search',
+                params={'q': query, 'type': 'video', 'page': 1},
+                timeout=8)
+            if res.status_code != 200:
+                continue
+            results = res.json()
+            if not results:
+                continue
+            video_id = results[0]['videoId']
+
+            # get streams
+            res2 = requests.get(f'{base}/api/v1/videos/{video_id}', timeout=8)
+            if res2.status_code != 200:
+                continue
+            data = res2.json()
+            streams = [f for f in data.get('adaptiveFormats', []) if 'audio' in f.get('type', '')]
+            if not streams:
+                streams = [f for f in data.get('formatStreams', [])]
+            if not streams:
+                continue
+            url = streams[0]['url']
+            print(f"Got stream from {base}")
+            return url
         except Exception as e:
-            print(f"Client {client} failed: {e}")
+            print(f"{base} failed: {e}")
             continue
-    raise Exception("All clients failed")
+    raise Exception("All Invidious instances failed")
 
 @app.route('/stream')
 def stream():
@@ -41,10 +48,9 @@ def stream():
     if not q:
         return jsonify({'error': 'no query'}), 400
     try:
-        url = get_audio_url(q)
+        url = search_and_get_url(q)
         def generate():
-            headers = {'User-Agent': 'Mozilla/5.0'}
-            with requests.get(url, headers=headers, stream=True) as r:
+            with requests.get(url, stream=True, timeout=30) as r:
                 for chunk in r.iter_content(chunk_size=8192):
                     if chunk:
                         yield chunk
