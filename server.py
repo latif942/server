@@ -5,14 +5,15 @@ app = Flask(__name__)
 
 def get_audio_url(query):
     opts = {
-        'format': 'bestaudio',
+        'format': 'bestaudio/best',
         'quiet': True,
         'noplaylist': True,
-        'extract_flat': False,
+        'cookiefile': 'cookies.txt',
     }
     with yt_dlp.YoutubeDL(opts) as ydl:
         info = ydl.extract_info(f"ytsearch1:{query}", download=False)
-        return info['entries'][0]['url']
+        entries = info.get('entries') or [info]
+        return entries[0]['url']
 
 @app.route('/stream')
 def stream():
